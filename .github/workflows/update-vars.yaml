@@ -15,65 +15,109 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Get full commit history for accurate dates
 
-      - name: Ensure ffmpeg and jq are available
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg jq
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg jq
 
-      - name: Build FILE_COUNT, FILE_NAMES (JSON), PUBLISH_DATE
+      - name: Build variables
         id: build_vars
         run: |
           # Find all .jlres3 files
+          echo "Searching for .jlres3 files..."
           mapfile -t FILES < <(find . -type f -name '*.jlres3')
           FILE_COUNT=${#FILES[@]}
+          echo "FILE_COUNT: $FILE_COUNT"
 
-          # Build JSON mapping for FILE_NAMES
+          # Build JSON mapping for file names
           echo "{" > file_names.json
           for f in "${FILES[@]}"; do
             original=$(basename "$f")
-            temp="$f.mp3"
+            temp="${f}.mp3"
             cp "$f" "$temp"
+            
+            # Extract song name with error handling
             SONG_NAME=$(ffprobe -v error -show_entries format_tags=title \
-              -of default=noprint_wrappers=1:nokey=1 "$temp" | head -n 1)
-            rm "$temp"
-            # Fallback to original name if no song name found
+                      -of default=noprint_wrappers=1:nokey=1 "$temp" 2>/dev/null | head -n 1 || echo "")
+            rm -f "$temp"
+            
+            # Fallback to original name if extraction fails
             if [ -z "$SONG_NAME" ]; then
               SONG_NAME="${original%.jlres3}"
+              echo "Using fallback name for $original"
             fi
-            # Clean up song name for safe JSON
-            safe_song_name=$(echo "$SONG_NAME" | jq -R -s '. | gsub("[\\n\\r]";"")' | jq -r .)
-            mapped_name="${safe_song_name}.jlres3"
-            echo "  \"${original}\": \"${mapped_name}\"," >> file_names.json
+            
+            # Clean and escape song name
+            safe_song_name=$(echo "$SONG_NAME" | jq -R .)
+            echo "  \"${original}\": ${safe_song_name}," >> file_names.json
           done
-          sed -i '$ s/,$//' file_names.json # remove trailing comma
+          
+          # Finalize JSON file
+          sed -i '$ s/,$//' file_names.json
           echo "}" >> file_names.json
-          FILE_NAMES=$(cat file_names.json | jq -c .)
-
+          
+          # Create compact version
+          jq -c . file_names.json > file_names_compact.json
+          
           # Get latest commit date
           PUBLISH_DATE=$(git log -1 --format='%cI')
+          echo "PUBLISH_DATE: $PUBLISH_DATE"
 
+          # Set outputs
           echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
-          echo "file_names=$FILE_NAMES" >> $GITHUB_OUTPUT
           echo "publish_date=$PUBLISH_DATE" >> $GITHUB_OUTPUT
 
-      - name: Update repository variables using PAT (update only, do not create)
+      - name: Validate JSON
+        run: |
+          echo "Validating file_names_compact.json..."
+          jq empty file_names_compact.json
+          echo "JSON is valid!"
+          echo "FILE_NAMES size: $(wc -c < file_names_compact.json) bytes"
+
+      - name: Update repository variables
         env:
           GH_TOKEN: ${{ secrets.ACTIONS_PAT }}
         run: |
+          # Enhanced update function
           update_var() {
             VAR_NAME="$1"
             VAR_VALUE="$2"
             REPO="$3"
-            EXISTS=$(gh api /repos/$REPO/actions/variables/$VAR_NAME --jq .name --silent 2>/dev/null || echo "")
-            if [ -n "$EXISTS" ]; then
-              gh api \
-                --method PUT \
-                -H "Accept: application/vnd.github+json" \
-                /repos/$REPO/actions/variables/$VAR_NAME \
-                -f value="$VAR_VALUE"
+            
+            echo "Updating $VAR_NAME (${#VAR_VALUE} chars)"
+            
+            # Check if variable exists
+            if ! gh api "/repos/$REPO/actions/variables/$VAR_NAME" --silent 2>/dev/null; then
+              echo "⚠️ Variable $VAR_NAME does not exist. Skipping update."
+              return 0
+            fi
+            
+            # Update variable
+            response=$(gh api \
+              --method PATCH \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/$REPO/actions/variables/$VAR_NAME" \
+              -f name="$VAR_NAME" \
+              -f value="$VAR_VALUE" \
+              2>&1)
+            
+            if [ $? -eq 0 ]; then
+              echo "✅ Successfully updated $VAR_NAME"
             else
-              echo "Variable $VAR_NAME does not exist. Skipping update."
+              echo "❌ Failed to update $VAR_NAME. Error: $response"
+              exit 1
             fi
           }
-          update_var "FILE_COUNT" "${{ steps.build_vars.outputs.file_count }}" "${{ github.repository }}"
-          update_var "FILE_NAMES" "${{ steps.build_vars.outputs.file_names }}" "${{ github.repository }}"
-          update_var "PUBLISH_DATE" "${{ steps.build_vars.outputs.publish_date }}" "${{ github.repository }}"
+
+          # Read values
+          FILE_COUNT_VAL="${{ steps.build_vars.outputs.file_count }}"
+          PUBLISH_DATE_VAL="${{ steps.build_vars.outputs.publish_date }}"
+          FILE_NAMES_VAL=$(cat file_names_compact.json)
+          
+          # Update variables
+          update_var "FILE_COUNT" "$FILE_COUNT_VAL" "${{ github.repository }}"
+          update_var "FILE_NAMES" "$FILE_NAMES_VAL" "${{ github.repository }}"
+          update_var "PUBLISH_DATE" "$PUBLISH_DATE_VAL" "${{ github.repository }}"
