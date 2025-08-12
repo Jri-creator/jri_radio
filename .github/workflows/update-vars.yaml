@@ -1,0 +1,75 @@
+name: Update Action Variables on Host Branch
+
+on:
+  push:
+    branches:
+      - host
+
+jobs:
+  update-vars:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Ensure ffmpeg is available
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg jq
+
+      - name: Build FILE_COUNT, FILE_NAMES (JSON), PUBLISH_DATE
+        id: build_vars
+        run: |
+          # Find all .jlres3 files
+          mapfile -t FILES < <(find . -type f -name '*.jlres3')
+          FILE_COUNT=${#FILES[@]}
+          
+          # Build JSON mapping for FILE_NAMES
+          echo "{" > file_names.json
+          for f in "${FILES[@]}"; do
+            original=$(basename "$f")
+            temp="$f.mp3"
+            cp "$f" "$temp"
+            SONG_NAME=$(ffprobe -v error -show_entries format_tags=title \
+              -of default=noprint_wrappers=1:nokey=1 "$temp" | head -n 1)
+            rm "$temp"
+            # Fallback to original name if no song name found
+            if [ -z "$SONG_NAME" ]; then
+              SONG_NAME="${original%.jlres3}"
+            fi
+            # Clean up song name for safe JSON
+            safe_song_name=$(echo "$SONG_NAME" | jq -R -s '. | gsub("[\\n\\r]";"")' | jq -r .)
+            mapped_name="${safe_song_name}.jlres3"
+            echo "  \"${original}\": \"${mapped_name}\"," >> file_names.json
+          done
+          sed -i '$ s/,$//' file_names.json # remove trailing comma
+          echo "}" >> file_names.json
+          FILE_NAMES=$(cat file_names.json | jq -c .)
+
+          # Get latest commit date
+          PUBLISH_DATE=$(git log -1 --format='%cI')
+
+          echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
+          echo "file_names=$FILE_NAMES" >> $GITHUB_OUTPUT
+          echo "publish_date=$PUBLISH_DATE" >> $GITHUB_OUTPUT
+
+      - name: Update repository variables
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api \
+            --method PUT \
+            -H "Accept: application/vnd.github+json" \
+            /repos/${{ github.repository }}/actions/variables/FILE_COUNT \
+            -f value="${{ steps.build_vars.outputs.file_count }}"
+          gh api \
+            --method PUT \
+            -H "Accept: application/vnd.github+json" \
+            /repos/${{ github.repository }}/actions/variables/FILE_NAMES \
+            -f value="${{ steps.build_vars.outputs.file_names }}"
+          gh api \
+            --method PUT \
+            -H "Accept: application/vnd.github+json" \
+            /repos/${{ github.repository }}/actions/variables/PUBLISH_DATE \
+            -f value="${{ steps.build_vars.outputs.publish_date }}"
