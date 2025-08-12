@@ -1,4 +1,4 @@
-name: Update Action Variables on Host Branch
+name: Update Repository Variables and Song Data
 
 on:
   push:
@@ -7,16 +7,16 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  contents: write  # Added write permission for creating files
 
 jobs:
-  update-vars:
+  update-data:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Get full commit history for accurate dates
+          fetch-depth: 0  # Full history for accurate commit dates
 
       - name: Install dependencies
         run: |
@@ -26,13 +26,14 @@ jobs:
       - name: Build variables
         id: build_vars
         run: |
-          # Find all .jlres3 files
-          echo "Searching for .jlres3 files..."
+          # Find and count .jlres3 files
+          echo "🔍 Finding .jlres3 files..."
           mapfile -t FILES < <(find . -type f -name '*.jlres3')
           FILE_COUNT=${#FILES[@]}
-          echo "FILE_COUNT: $FILE_COUNT"
+          echo "📊 FILE_COUNT: $FILE_COUNT"
 
           # Build JSON mapping for file names
+          echo "🛠️ Building file name mapping..."
           echo "{" > file_names.json
           for f in "${FILES[@]}"; do
             original=$(basename "$f")
@@ -47,7 +48,7 @@ jobs:
             # Fallback to original name if extraction fails
             if [ -z "$SONG_NAME" ]; then
               SONG_NAME="${original%.jlres3}"
-              echo "Using fallback name for $original"
+              echo "⚠️  Using fallback name for $original"
             fi
             
             # Clean and escape song name
@@ -64,7 +65,7 @@ jobs:
           
           # Get latest commit date
           PUBLISH_DATE=$(git log -1 --format='%cI')
-          echo "PUBLISH_DATE: $PUBLISH_DATE"
+          echo "📅 PUBLISH_DATE: $PUBLISH_DATE"
 
           # Set outputs
           echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
@@ -72,52 +73,71 @@ jobs:
 
       - name: Validate JSON
         run: |
-          echo "Validating file_names_compact.json..."
+          echo "✅ Validating JSON..."
           jq empty file_names_compact.json
-          echo "JSON is valid!"
-          echo "FILE_NAMES size: $(wc -c < file_names_compact.json) bytes"
+          echo "📦 FILE_NAMES size: $(wc -c < file_names_compact.json) bytes"
+
+      - name: Create songdec.json file
+        run: |
+          # Create JSON directory if it doesn't exist
+          mkdir -p JSON
+          
+          # Copy compact JSON to songdec.json
+          cp file_names_compact.json JSON/songdec.json
+          
+          # Add to git to commit later
+          git add JSON/songdec.json
+          
+          echo "📁 Created JSON/songdec.json"
+
+      - name: Commit songdec.json
+        run: |
+          # Configure git identity
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # Commit only if there are changes
+          if git diff-index --quiet HEAD --; then
+            echo "🔄 No changes to commit"
+          else
+            git commit -m "Update songdec.json [skip ci]"
+            echo "✅ Committed songdec.json"
+          fi
+
+      - name: Push songdec.json
+        run: |
+          # Only push if there's a commit
+          if git log -1 --pretty=%B | grep -q "Update songdec.json"; then
+            git push origin HEAD:host
+            echo "🚀 Pushed songdec.json to repository"
+          else
+            echo "⏩ No commit to push"
+          fi
 
       - name: Update repository variables
         env:
           GH_TOKEN: ${{ secrets.ACTIONS_PAT }}
         run: |
-          # Enhanced update function
-          update_var() {
-            VAR_NAME="$1"
-            VAR_VALUE="$2"
-            REPO="$3"
-            
-            echo "Updating $VAR_NAME (${#VAR_VALUE} chars)"
-            
-            # Check if variable exists
-            if ! gh api "/repos/$REPO/actions/variables/$VAR_NAME" --silent 2>/dev/null; then
-              echo "⚠️ Variable $VAR_NAME does not exist. Skipping update."
-              return 0
-            fi
-            
-            # Update variable
-            response=$(gh api \
-              --method PATCH \
-              -H "Accept: application/vnd.github+json" \
-              "/repos/$REPO/actions/variables/$VAR_NAME" \
-              -f name="$VAR_NAME" \
-              -f value="$VAR_VALUE" \
-              2>&1)
-            
-            if [ $? -eq 0 ]; then
-              echo "✅ Successfully updated $VAR_NAME"
-            else
-              echo "❌ Failed to update $VAR_NAME. Error: $response"
-              exit 1
-            fi
-          }
-
           # Read values
           FILE_COUNT_VAL="${{ steps.build_vars.outputs.file_count }}"
           PUBLISH_DATE_VAL="${{ steps.build_vars.outputs.publish_date }}"
           FILE_NAMES_VAL=$(cat file_names_compact.json)
           
+          # Update function using PATCH method
+          update_var() {
+            echo "🔄 Updating $1..."
+            gh api \
+              --method PATCH \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${{ github.repository }}/actions/variables/$1" \
+              -f name="$1" \
+              -f value="$2"
+            echo "✅ $1 updated successfully!"
+          }
+
           # Update variables
-          update_var "FILE_COUNT" "$FILE_COUNT_VAL" "${{ github.repository }}"
-          update_var "FILE_NAMES" "$FILE_NAMES_VAL" "${{ github.repository }}"
-          update_var "PUBLISH_DATE" "$PUBLISH_DATE_VAL" "${{ github.repository }}"
+          update_var "FILE_COUNT" "$FILE_COUNT_VAL"
+          update_var "FILE_NAMES" "$FILE_NAMES_VAL"
+          update_var "PUBLISH_DATE" "$PUBLISH_DATE_VAL"
+          
+          echo "🎉 All variables updated successfully! 🎉"
