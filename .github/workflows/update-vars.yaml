@@ -5,12 +5,13 @@ on:
     branches:
       - host
 
+permissions:
+  actions: write
+  contents: read
+
 jobs:
   update-vars:
     runs-on: ubuntu-latest
-    permissions:
-      actions: write
-      contents: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -54,9 +55,9 @@ jobs:
           echo "file_names=$FILE_NAMES" >> $GITHUB_OUTPUT
           echo "publish_date=$PUBLISH_DATE" >> $GITHUB_OUTPUT
 
-      - name: Create or update repository variables
+      - name: Create or update repository variables using PAT
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.ACTIONS_PAT }}
         run: |
           create_or_update_var() {
             VAR_NAME="$1"
