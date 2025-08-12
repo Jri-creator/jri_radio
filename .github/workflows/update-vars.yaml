@@ -55,30 +55,25 @@ jobs:
           echo "file_names=$FILE_NAMES" >> $GITHUB_OUTPUT
           echo "publish_date=$PUBLISH_DATE" >> $GITHUB_OUTPUT
 
-      - name: Create or update repository variables using PAT
+      - name: Update repository variables using PAT (update only, do not create)
         env:
           GH_TOKEN: ${{ secrets.ACTIONS_PAT }}
         run: |
-          create_or_update_var() {
+          update_var() {
             VAR_NAME="$1"
             VAR_VALUE="$2"
             REPO="$3"
             EXISTS=$(gh api /repos/$REPO/actions/variables/$VAR_NAME --jq .name --silent 2>/dev/null || echo "")
-            if [ -z "$EXISTS" ]; then
-              gh api \
-                --method POST \
-                -H "Accept: application/vnd.github+json" \
-                /repos/$REPO/actions/variables \
-                -f name="$VAR_NAME" \
-                -f value="$VAR_VALUE"
-            else
+            if [ -n "$EXISTS" ]; then
               gh api \
                 --method PUT \
                 -H "Accept: application/vnd.github+json" \
                 /repos/$REPO/actions/variables/$VAR_NAME \
                 -f value="$VAR_VALUE"
+            else
+              echo "Variable $VAR_NAME does not exist. Skipping update."
             fi
           }
-          create_or_update_var "FILE_COUNT" "${{ steps.build_vars.outputs.file_count }}" "${{ github.repository }}"
-          create_or_update_var "FILE_NAMES" "${{ steps.build_vars.outputs.file_names }}" "${{ github.repository }}"
-          create_or_update_var "PUBLISH_DATE" "${{ steps.build_vars.outputs.publish_date }}" "${{ github.repository }}"
+          update_var "FILE_COUNT" "${{ steps.build_vars.outputs.file_count }}" "${{ github.repository }}"
+          update_var "FILE_NAMES" "${{ steps.build_vars.outputs.file_names }}" "${{ github.repository }}"
+          update_var "PUBLISH_DATE" "${{ steps.build_vars.outputs.publish_date }}" "${{ github.repository }}"
