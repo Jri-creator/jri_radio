@@ -15,7 +15,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Ensure ffmpeg is available
+      - name: Ensure ffmpeg and jq are available
         run: sudo apt-get update && sudo apt-get install -y ffmpeg jq
 
       - name: Build FILE_COUNT, FILE_NAMES (JSON), PUBLISH_DATE
@@ -24,7 +24,7 @@ jobs:
           # Find all .jlres3 files
           mapfile -t FILES < <(find . -type f -name '*.jlres3')
           FILE_COUNT=${#FILES[@]}
-          
+
           # Build JSON mapping for FILE_NAMES
           echo "{" > file_names.json
           for f in "${FILES[@]}"; do
@@ -54,22 +54,30 @@ jobs:
           echo "file_names=$FILE_NAMES" >> $GITHUB_OUTPUT
           echo "publish_date=$PUBLISH_DATE" >> $GITHUB_OUTPUT
 
-      - name: Update repository variables
+      - name: Create or update repository variables
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh api \
-            --method PUT \
-            -H "Accept: application/vnd.github+json" \
-            /repos/${{ github.repository }}/actions/variables/FILE_COUNT \
-            -f value="${{ steps.build_vars.outputs.file_count }}"
-          gh api \
-            --method PUT \
-            -H "Accept: application/vnd.github+json" \
-            /repos/${{ github.repository }}/actions/variables/FILE_NAMES \
-            -f value="${{ steps.build_vars.outputs.file_names }}"
-          gh api \
-            --method PUT \
-            -H "Accept: application/vnd.github+json" \
-            /repos/${{ github.repository }}/actions/variables/PUBLISH_DATE \
-            -f value="${{ steps.build_vars.outputs.publish_date }}"
+          create_or_update_var() {
+            VAR_NAME="$1"
+            VAR_VALUE="$2"
+            REPO="$3"
+            EXISTS=$(gh api /repos/$REPO/actions/variables/$VAR_NAME --jq .name --silent 2>/dev/null || echo "")
+            if [ -z "$EXISTS" ]; then
+              gh api \
+                --method POST \
+                -H "Accept: application/vnd.github+json" \
+                /repos/$REPO/actions/variables \
+                -f name="$VAR_NAME" \
+                -f value="$VAR_VALUE"
+            else
+              gh api \
+                --method PUT \
+                -H "Accept: application/vnd.github+json" \
+                /repos/$REPO/actions/variables/$VAR_NAME \
+                -f value="$VAR_VALUE"
+            fi
+          }
+          create_or_update_var "FILE_COUNT" "${{ steps.build_vars.outputs.file_count }}" "${{ github.repository }}"
+          create_or_update_var "FILE_NAMES" "${{ steps.build_vars.outputs.file_names }}" "${{ github.repository }}"
+          create_or_update_var "PUBLISH_DATE" "${{ steps.build_vars.outputs.publish_date }}" "${{ github.repository }}"
